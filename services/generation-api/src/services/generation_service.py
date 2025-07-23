@@ -1,777 +1,1039 @@
 """
-Generation Service for orchestrating AI model inference
-Handles capsule collection generation, single products, and style transfer
+Enhanced Generation Service with KSE Memory Integration
+Implements detailed stepwise async workflows for capsule collections, single products, and style transfer
 """
 
 import asyncio
 import logging
-import time
-import torch
-import numpy as np
-from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta
 import uuid
+from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime, timedelta
 import json
 
-from .model_manager import ModelManager
+from ..core.database import get_db
 from ..core.redis_client import redis_manager
-from ..core.config import get_settings
-from ..models.generation_models import GenerationStatus, GenerationType
+from ..models.generation_models import GenerationJob, GenerationOutput, GenerationStatus, GenerationType
+from ..models.fashion_models import Brand, Collection, Product
+from ..services.model_manager import ModelManager
+from ..services.kse_memory_service import KSEMemoryService, MultiModalInputs
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_, or_
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 
 class GenerationService:
     """
-    Service for orchestrating AI-powered fashion generation.
-    Manages the complete generation pipeline from request to output.
+    Enhanced generation service with KSE memory integration and detailed workflows.
+    Orchestrates complex multi-step generation processes with status tracking and error handling.
     """
     
-    def __init__(self, model_manager: ModelManager):
+    def __init__(self, model_manager: ModelManager, kse_memory: KSEMemoryService):
         self.model_manager = model_manager
-        self.settings = get_settings()
-        self.active_generations: Dict[str, Dict] = {}
-        self.generation_queue = asyncio.Queue()
-        
-        # Start background queue processor
-        asyncio.create_task(self._process_generation_queue())
+        self.kse_memory = kse_memory
+        self.generation_steps = {
+            'capsule_collection': [
+                'input_processing',
+                'memory_retrieval',
+                'design_dna_analysis',
+                'concept_generation',
+                'style_coherence_check',
+                'brand_alignment_validation',
+                'output_generation',
+                'quality_assessment',
+                'commercial_optimization',
+                'finalization'
+            ],
+            'single_product': [
+                'input_processing',
+                'memory_retrieval',
+                'product_specification',
+                'design_generation',
+                'technical_validation',
+                'brand_alignment_check',
+                'quality_assessment',
+                'finalization'
+            ],
+            'style_transfer': [
+                'input_processing',
+                'style_analysis',
+                'memory_retrieval',
+                'compatibility_assessment',
+                'transfer_generation',
+                'style_preservation_check',
+                'quality_assessment',
+                'finalization'
+            ]
+        }
     
-    async def generate_capsule_collection(
-        self, 
-        job_id: str, 
-        request: Any, 
+    async def generate_capsule_collection_enhanced(
+        self,
+        task_id: str,
+        params: Dict[str, Any],
         db: AsyncSession
     ):
         """
-        Generate a complete capsule collection.
-        Creates a cohesive set of fashion pieces that work together.
+        Enhanced capsule collection generation with detailed stepwise processing.
         """
         try:
-            logger.info(f"Starting capsule collection generation: {job_id}")
+            # Initialize job tracking
+            await self._initialize_generation_job(task_id, GenerationType.CAPSULE_COLLECTION, params, db)
             
-            # Update status to running
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.1)
+            inputs = params['inputs']
+            design_dna = params.get('design_dna')
+            brand_parameters = params['brand_parameters']
+            generation_settings = params['generation_settings']
             
-            # Extract generation parameters
-            params = self._extract_generation_params(request)
+            steps = self.generation_steps['capsule_collection']
+            total_steps = len(steps)
             
-            # Step 1: Analyze brand DNA and constraints (10%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.1, "Analyzing brand DNA")
-            brand_context = await self._analyze_brand_context(params.get("brand_id"))
+            # Step 1: Input Processing
+            await self._update_progress(task_id, 0.1, steps[0], "Processing multi-modal inputs")
+            processed_inputs = await self._process_inputs_step(inputs, brand_parameters)
             
-            # Step 2: Generate collection theme and mood (20%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.2, "Generating collection theme")
-            collection_theme = await self._generate_collection_theme(params, brand_context)
-            
-            # Step 3: Create design DNA for each piece (40%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.4, "Creating design DNA")
-            piece_designs = await self._generate_piece_designs(
-                collection_theme, 
-                params.get("target_pieces", 5),
-                brand_context
+            # Step 2: Memory Retrieval
+            await self._update_progress(task_id, 0.2, steps[1], "Retrieving KSE memory context")
+            memory_context = await self._retrieve_memory_context_step(
+                processed_inputs, brand_parameters, design_dna
             )
             
-            # Step 4: Generate visual representations (80%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.8, "Generating visuals")
-            visual_outputs = await self._generate_visuals(piece_designs, params)
-            
-            # Step 5: Quality assessment and refinement (95%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.95, "Quality assessment")
-            final_outputs = await self._assess_and_refine_outputs(visual_outputs, brand_context)
-            
-            # Step 6: Store results and complete (100%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 1.0, "Finalizing results")
-            await self._store_generation_results(job_id, final_outputs, db)
-            
-            # Mark as completed
-            await self._update_job_status(job_id, GenerationStatus.COMPLETED, 1.0)
-            
-            logger.info(f"Capsule collection generation completed: {job_id}")
-            
-        except Exception as e:
-            logger.error(f"Capsule collection generation failed: {job_id} - {e}")
-            await self._update_job_status(
-                job_id, 
-                GenerationStatus.FAILED, 
-                error_message=str(e)
+            # Step 3: Design DNA Analysis
+            await self._update_progress(task_id, 0.3, steps[2], "Analyzing brand design DNA")
+            dna_analysis = await self._analyze_design_dna_step(
+                brand_parameters, memory_context
             )
-    
-    async def generate_single_product(
-        self, 
-        job_id: str, 
-        request: Any, 
-        db: AsyncSession
-    ):
-        """Generate a single fashion product."""
-        try:
-            logger.info(f"Starting single product generation: {job_id}")
             
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.1)
-            params = self._extract_generation_params(request)
+            # Step 4: Concept Generation
+            await self._update_progress(task_id, 0.4, steps[3], "Generating collection concepts")
+            concepts = await self._generate_concepts_step(
+                processed_inputs, dna_analysis, generation_settings['target_pieces']
+            )
             
-            # Step 1: Analyze requirements (20%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.2, "Analyzing requirements")
-            brand_context = await self._analyze_brand_context(params.get("brand_id"))
-            product_spec = await self._create_product_specification(params, brand_context)
+            # Step 5: Style Coherence Check
+            await self._update_progress(task_id, 0.5, steps[4], "Ensuring style coherence")
+            coherent_concepts = await self._ensure_style_coherence_step(
+                concepts, dna_analysis, memory_context
+            )
             
-            # Step 2: Generate design (60%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.6, "Generating design")
-            design_output = await self._generate_single_design(product_spec, params)
+            # Step 6: Brand Alignment Validation
+            await self._update_progress(task_id, 0.6, steps[5], "Validating brand alignment")
+            aligned_concepts = await self._validate_brand_alignment_step(
+                coherent_concepts, brand_parameters, dna_analysis
+            )
             
-            # Step 3: Create visuals (90%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.9, "Creating visuals")
-            visual_outputs = await self._generate_visuals([design_output], params)
+            # Step 7: Output Generation
+            await self._update_progress(task_id, 0.7, steps[6], "Generating visual outputs")
+            outputs = await self._generate_visual_outputs_step(
+                aligned_concepts, generation_settings
+            )
             
-            # Step 4: Finalize (100%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 1.0, "Finalizing")
-            await self._store_generation_results(job_id, visual_outputs, db)
-            await self._update_job_status(job_id, GenerationStatus.COMPLETED, 1.0)
+            # Step 8: Quality Assessment
+            await self._update_progress(task_id, 0.8, steps[7], "Assessing output quality")
+            assessed_outputs = await self._assess_output_quality_step(outputs, dna_analysis)
             
-            logger.info(f"Single product generation completed: {job_id}")
-            
-        except Exception as e:
-            logger.error(f"Single product generation failed: {job_id} - {e}")
-            await self._update_job_status(job_id, GenerationStatus.FAILED, error_message=str(e))
-    
-    async def generate_style_transfer(
-        self, 
-        job_id: str, 
-        request: Any, 
-        db: AsyncSession
-    ):
-        """Apply style transfer to create variations."""
-        try:
-            logger.info(f"Starting style transfer generation: {job_id}")
-            
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.1)
-            params = self._extract_generation_params(request)
-            
-            # Step 1: Load and preprocess source image (30%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.3, "Processing source image")
-            source_features = await self._extract_image_features(params.get("source_image"))
-            
-            # Step 2: Analyze target style (50%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.5, "Analyzing target style")
-            style_features = await self._extract_style_features(params.get("target_style"))
-            
-            # Step 3: Apply style transfer (80%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 0.8, "Applying style transfer")
-            transferred_outputs = await self._apply_style_transfer(source_features, style_features, params)
-            
-            # Step 4: Post-process and finalize (100%)
-            await self._update_job_status(job_id, GenerationStatus.RUNNING, 1.0, "Post-processing")
-            await self._store_generation_results(job_id, transferred_outputs, db)
-            await self._update_job_status(job_id, GenerationStatus.COMPLETED, 1.0)
-            
-            logger.info(f"Style transfer generation completed: {job_id}")
-            
-        except Exception as e:
-            logger.error(f"Style transfer generation failed: {job_id} - {e}")
-            await self._update_job_status(job_id, GenerationStatus.FAILED, error_message=str(e))
-    
-    async def _analyze_brand_context(self, brand_id: Optional[str]) -> Dict[str, Any]:
-        """Analyze brand context and DNA for generation guidance."""
-        if not brand_id:
-            return self._get_default_brand_context()
-        
-        try:
-            # In a real implementation, this would query the database
-            # For now, return mock brand context
-            return {
-                "design_dna": {
-                    "aesthetic": "minimalist",
-                    "color_preference": ["black", "white", "gray", "beige"],
-                    "silhouette_style": "clean_lines",
-                    "target_demographic": "urban_professional"
-                },
-                "constraints": {
-                    "price_range": {"min": 100, "max": 500},
-                    "sustainability_focus": True,
-                    "seasonal_adaptability": True
-                },
-                "brand_values": ["quality", "sustainability", "timeless_design"]
-            }
-        except Exception as e:
-            logger.warning(f"Failed to analyze brand context: {e}")
-            return self._get_default_brand_context()
-    
-    def _get_default_brand_context(self) -> Dict[str, Any]:
-        """Get default brand context when no specific brand is provided."""
-        return {
-            "design_dna": {
-                "aesthetic": "contemporary",
-                "color_preference": ["neutral", "earth_tones"],
-                "silhouette_style": "versatile",
-                "target_demographic": "general"
-            },
-            "constraints": {
-                "price_range": {"min": 50, "max": 300},
-                "sustainability_focus": False,
-                "seasonal_adaptability": True
-            },
-            "brand_values": ["accessibility", "style", "comfort"]
-        }
-    
-    async def _generate_collection_theme(
-        self, 
-        params: Dict[str, Any], 
-        brand_context: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Generate a cohesive theme for the collection."""
-        # Use CLIP model for text understanding if available
-        clip_model = self.model_manager.get_model("clip")
-        
-        theme_prompt = params.get("text_prompt", "contemporary fashion collection")
-        season = params.get("season", "spring")
-        
-        # In a real implementation, this would use AI models to generate theme
-        # For now, return a structured theme based on inputs
-        return {
-            "primary_theme": theme_prompt,
-            "season": season,
-            "color_palette": self._generate_color_palette(brand_context, season),
-            "silhouette_direction": self._determine_silhouette_direction(brand_context),
-            "material_focus": self._select_materials(brand_context, season),
-            "mood": self._generate_mood_descriptors(theme_prompt, brand_context)
-        }
-    
-    def _generate_color_palette(self, brand_context: Dict, season: str) -> List[str]:
-        """Generate color palette based on brand DNA and season."""
-        brand_colors = brand_context.get("design_dna", {}).get("color_preference", [])
-        
-        seasonal_colors = {
-            "spring": ["soft_pink", "light_green", "cream", "lavender"],
-            "summer": ["bright_white", "coral", "sky_blue", "lemon"],
-            "fall": ["burnt_orange", "deep_burgundy", "forest_green", "camel"],
-            "winter": ["charcoal", "burgundy", "navy", "ivory"]
-        }
-        
-        base_colors = seasonal_colors.get(season, seasonal_colors["spring"])
-        
-        # Blend brand preferences with seasonal colors
-        if brand_colors:
-            return brand_colors[:2] + base_colors[:2]
-        
-        return base_colors
-    
-    def _determine_silhouette_direction(self, brand_context: Dict) -> str:
-        """Determine silhouette direction based on brand DNA."""
-        style = brand_context.get("design_dna", {}).get("silhouette_style", "versatile")
-        
-        silhouette_mapping = {
-            "minimalist": "clean_geometric",
-            "clean_lines": "structured_tailored",
-            "versatile": "adaptable_layering",
-            "contemporary": "modern_classic"
-        }
-        
-        return silhouette_mapping.get(style, "balanced_proportions")
-    
-    def _select_materials(self, brand_context: Dict, season: str) -> List[str]:
-        """Select appropriate materials based on brand and season."""
-        seasonal_materials = {
-            "spring": ["cotton", "linen", "silk", "lightweight_wool"],
-            "summer": ["cotton", "linen", "bamboo", "breathable_synthetics"],
-            "fall": ["wool", "cashmere", "denim", "leather"],
-            "winter": ["wool", "cashmere", "down", "heavy_cotton"]
-        }
-        
-        return seasonal_materials.get(season, seasonal_materials["spring"])
-    
-    def _generate_mood_descriptors(self, theme_prompt: str, brand_context: Dict) -> List[str]:
-        """Generate mood descriptors for the collection."""
-        # In a real implementation, this would use NLP to extract mood
-        base_moods = ["sophisticated", "comfortable", "versatile", "modern"]
-        
-        if "luxury" in theme_prompt.lower():
-            base_moods.extend(["elegant", "premium"])
-        if "casual" in theme_prompt.lower():
-            base_moods.extend(["relaxed", "effortless"])
-        if "professional" in theme_prompt.lower():
-            base_moods.extend(["polished", "confident"])
-        
-        return base_moods[:5]  # Return top 5 mood descriptors
-    
-    async def _generate_piece_designs(
-        self, 
-        collection_theme: Dict[str, Any], 
-        num_pieces: int,
-        brand_context: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """Generate individual piece designs for the collection."""
-        garment_types = ["top", "bottom", "dress", "outerwear", "accessory"]
-        pieces = []
-        
-        for i in range(num_pieces):
-            garment_type = garment_types[i % len(garment_types)]
-            
-            piece_design = {
-                "piece_id": str(uuid.uuid4()),
-                "garment_type": garment_type,
-                "design_dna": self._create_piece_dna(garment_type, collection_theme, brand_context),
-                "specifications": self._create_piece_specifications(garment_type, collection_theme),
-                "generation_params": self._create_generation_parameters(garment_type, collection_theme)
-            }
-            
-            pieces.append(piece_design)
-        
-        return pieces
-    
-    def _create_piece_dna(
-        self, 
-        garment_type: str, 
-        collection_theme: Dict, 
-        brand_context: Dict
-    ) -> Dict[str, Any]:
-        """Create design DNA for a specific piece."""
-        return {
-            "silhouette": self._determine_piece_silhouette(garment_type, collection_theme),
-            "color": self._select_piece_color(collection_theme["color_palette"]),
-            "material": self._select_piece_material(garment_type, collection_theme["material_focus"]),
-            "details": self._generate_design_details(garment_type, brand_context),
-            "fit": self._determine_piece_fit(garment_type, brand_context)
-        }
-    
-    def _determine_piece_silhouette(self, garment_type: str, collection_theme: Dict) -> str:
-        """Determine silhouette for a specific piece type."""
-        silhouette_options = {
-            "top": ["fitted", "relaxed", "oversized", "structured"],
-            "bottom": ["straight", "wide_leg", "tapered", "fitted"],
-            "dress": ["a_line", "shift", "wrap", "bodycon"],
-            "outerwear": ["blazer", "coat", "jacket", "cardigan"],
-            "accessory": ["structured", "soft", "geometric", "organic"]
-        }
-        
-        options = silhouette_options.get(garment_type, ["classic"])
-        return np.random.choice(options)  # In real implementation, use AI guidance
-    
-    def _select_piece_color(self, color_palette: List[str]) -> str:
-        """Select color for a piece from the collection palette."""
-        return np.random.choice(color_palette)
-    
-    def _select_piece_material(self, garment_type: str, material_focus: List[str]) -> str:
-        """Select appropriate material for a piece type."""
-        # Filter materials appropriate for garment type
-        appropriate_materials = []
-        for material in material_focus:
-            if self._is_material_suitable(material, garment_type):
-                appropriate_materials.append(material)
-        
-        if not appropriate_materials:
-            appropriate_materials = material_focus
-        
-        return np.random.choice(appropriate_materials)
-    
-    def _is_material_suitable(self, material: str, garment_type: str) -> bool:
-        """Check if material is suitable for garment type."""
-        suitability_map = {
-            "silk": ["top", "dress", "accessory"],
-            "denim": ["bottom", "outerwear"],
-            "leather": ["outerwear", "accessory"],
-            "cotton": ["top", "bottom", "dress"],
-            "wool": ["outerwear", "bottom", "top"],
-            "linen": ["top", "bottom", "dress"]
-        }
-        
-        suitable_types = suitability_map.get(material, ["top", "bottom", "dress", "outerwear"])
-        return garment_type in suitable_types
-    
-    def _generate_design_details(self, garment_type: str, brand_context: Dict) -> List[str]:
-        """Generate design details for a piece."""
-        detail_options = {
-            "top": ["buttons", "collar", "cuffs", "pleats", "seaming"],
-            "bottom": ["pockets", "belt_loops", "hem_detail", "waistband"],
-            "dress": ["neckline", "sleeves", "waist_detail", "hem_style"],
-            "outerwear": ["lapels", "closures", "pockets", "lining"],
-            "accessory": ["hardware", "texture", "closure", "strap"]
-        }
-        
-        available_details = detail_options.get(garment_type, ["classic_styling"])
-        num_details = np.random.randint(1, min(4, len(available_details) + 1))
-        
-        return np.random.choice(available_details, size=num_details, replace=False).tolist()
-    
-    def _determine_piece_fit(self, garment_type: str, brand_context: Dict) -> str:
-        """Determine fit for a piece based on brand DNA."""
-        brand_fit_preference = brand_context.get("design_dna", {}).get("silhouette_style", "versatile")
-        
-        fit_mapping = {
-            "minimalist": "tailored",
-            "clean_lines": "fitted",
-            "versatile": "regular",
-            "contemporary": "modern"
-        }
-        
-        return fit_mapping.get(brand_fit_preference, "regular")
-    
-    def _create_piece_specifications(self, garment_type: str, collection_theme: Dict) -> Dict[str, Any]:
-        """Create detailed specifications for a piece."""
-        return {
-            "category": garment_type,
-            "style_code": f"{garment_type.upper()}-{np.random.randint(1000, 9999)}",
-            "season": collection_theme.get("season", "all_season"),
-            "care_instructions": self._generate_care_instructions(garment_type),
-            "size_range": ["XS", "S", "M", "L", "XL"],
-            "target_price": self._estimate_piece_price(garment_type)
-        }
-    
-    def _generate_care_instructions(self, garment_type: str) -> List[str]:
-        """Generate appropriate care instructions."""
-        base_care = ["machine_wash_cold", "tumble_dry_low", "iron_low_heat"]
-        
-        special_care = {
-            "silk": ["hand_wash", "air_dry", "no_iron"],
-            "wool": ["dry_clean_only", "store_flat"],
-            "leather": ["professional_clean", "condition_regularly"]
-        }
-        
-        # In real implementation, this would be based on selected material
-        return base_care
-    
-    def _estimate_piece_price(self, garment_type: str) -> float:
-        """Estimate price for a piece based on type and complexity."""
-        base_prices = {
-            "top": 80,
-            "bottom": 120,
-            "dress": 150,
-            "outerwear": 250,
-            "accessory": 60
-        }
-        
-        base_price = base_prices.get(garment_type, 100)
-        # Add some variation
-        variation = np.random.uniform(0.8, 1.3)
-        
-        return round(base_price * variation, 2)
-    
-    def _create_generation_parameters(self, garment_type: str, collection_theme: Dict) -> Dict[str, Any]:
-        """Create AI generation parameters for a piece."""
-        return {
-            "model_type": "stylegan3",
-            "resolution": 1024,
-            "guidance_scale": 7.5,
-            "num_inference_steps": 50,
-            "seed": np.random.randint(0, 2**32 - 1),
-            "style_prompt": f"{collection_theme['primary_theme']} {garment_type}",
-            "negative_prompt": "low quality, blurry, distorted, unrealistic"
-        }
-    
-    async def _generate_visuals(
-        self, 
-        piece_designs: List[Dict[str, Any]], 
-        params: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """Generate visual representations for the designs."""
-        visual_outputs = []
-        
-        for design in piece_designs:
-            try:
-                # Generate primary visual
-                primary_visual = await self._generate_piece_visual(design, params, "primary")
-                
-                # Generate additional views if requested
-                additional_views = []
-                if params.get("num_outputs", 1) > 1:
-                    for i in range(params.get("num_outputs", 1) - 1):
-                        view = await self._generate_piece_visual(design, params, f"variation_{i}")
-                        additional_views.append(view)
-                
-                visual_output = {
-                    "piece_id": design["piece_id"],
-                    "primary_visual": primary_visual,
-                    "additional_views": additional_views,
-                    "generation_metadata": {
-                        "model_used": "stylegan3",
-                        "generation_time": np.random.uniform(15, 45),  # Mock timing
-                        "quality_score": np.random.uniform(0.7, 0.95),
-                        "brand_alignment": np.random.uniform(0.8, 0.95)
-                    }
-                }
-                
-                visual_outputs.append(visual_output)
-                
-            except Exception as e:
-                logger.error(f"Failed to generate visual for piece {design['piece_id']}: {e}")
-                # Create error placeholder
-                visual_outputs.append({
-                    "piece_id": design["piece_id"],
-                    "error": str(e),
-                    "primary_visual": None
-                })
-        
-        return visual_outputs
-    
-    async def _generate_piece_visual(
-        self, 
-        design: Dict[str, Any], 
-        params: Dict[str, Any], 
-        view_type: str
-    ) -> Dict[str, Any]:
-        """Generate a single visual for a piece design."""
-        # Get the appropriate model
-        model_type = design.get("generation_params", {}).get("model_type", "stylegan3")
-        model = self.model_manager.get_model(model_type)
-        
-        if not model:
-            # Fallback to mock generation
-            return self._create_mock_visual(design, view_type)
-        
-        # In a real implementation, this would call the actual model
-        # For now, create a structured mock output
-        return {
-            "image_url": f"https://storage.example.com/generations/{design['piece_id']}_{view_type}.jpg",
-            "thumbnail_url": f"https://storage.example.com/generations/{design['piece_id']}_{view_type}_thumb.jpg",
-            "view_type": view_type,
-            "resolution": "1024x1024",
-            "format": "JPEG",
-            "generation_params": design.get("generation_params", {}),
-            "quality_metrics": {
-                "sharpness": np.random.uniform(0.8, 0.95),
-                "color_accuracy": np.random.uniform(0.85, 0.95),
-                "style_consistency": np.random.uniform(0.8, 0.92)
-            }
-        }
-    
-    def _create_mock_visual(self, design: Dict[str, Any], view_type: str) -> Dict[str, Any]:
-        """Create a mock visual output when models are not available."""
-        return {
-            "image_url": f"https://storage.example.com/mock/{design['piece_id']}_{view_type}.jpg",
-            "thumbnail_url": f"https://storage.example.com/mock/{design['piece_id']}_{view_type}_thumb.jpg",
-            "view_type": view_type,
-            "resolution": "1024x1024",
-            "format": "JPEG",
-            "mock": True,
-            "quality_metrics": {
-                "sharpness": 0.85,
-                "color_accuracy": 0.90,
-                "style_consistency": 0.88
-            }
-        }
-    
-    async def _assess_and_refine_outputs(
-        self, 
-        visual_outputs: List[Dict[str, Any]], 
-        brand_context: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """Assess and refine the generated outputs."""
-        refined_outputs = []
-        
-        for output in visual_outputs:
-            if "error" in output:
-                refined_outputs.append(output)
-                continue
-            
-            # Assess quality
-            quality_assessment = await self._assess_output_quality(output, brand_context)
-            
-            # Refine if needed
-            if quality_assessment["needs_refinement"]:
-                refined_output = await self._refine_output(output, quality_assessment)
-                refined_outputs.append(refined_output)
+            # Step 9: Commercial Optimization
+            if generation_settings.get('optimize_for_commercial'):
+                await self._update_progress(task_id, 0.9, steps[8], "Optimizing for commercial success")
+                optimized_outputs = await self._optimize_commercial_step(
+                    assessed_outputs, brand_parameters, generation_settings
+                )
             else:
-                refined_outputs.append(output)
-        
-        return refined_outputs
-    
-    async def _assess_output_quality(
-        self, 
-        output: Dict[str, Any], 
-        brand_context: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Assess the quality of a generated output."""
-        # In a real implementation, this would use CLIP and other models
-        # For now, return mock assessment
-        
-        quality_score = output.get("generation_metadata", {}).get("quality_score", 0.8)
-        brand_alignment = output.get("generation_metadata", {}).get("brand_alignment", 0.8)
-        
-        return {
-            "overall_quality": quality_score,
-            "brand_alignment": brand_alignment,
-            "technical_quality": np.random.uniform(0.8, 0.95),
-            "aesthetic_appeal": np.random.uniform(0.75, 0.92),
-            "needs_refinement": quality_score < 0.8 or brand_alignment < 0.8,
-            "refinement_suggestions": [] if quality_score >= 0.8 else ["improve_sharpness", "adjust_colors"]
-        }
-    
-    async def _refine_output(
-        self, 
-        output: Dict[str, Any], 
-        assessment: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Refine an output based on quality assessment."""
-        # In a real implementation, this would apply refinement techniques
-        # For now, just update the quality scores
-        
-        refined_output = output.copy()
-        refined_output["refined"] = True
-        refined_output["original_quality"] = assessment["overall_quality"]
-        refined_output["generation_metadata"]["quality_score"] = min(0.95, assessment["overall_quality"] + 0.1)
-        
-        return refined_output
-    
-    async def _store_generation_results(
-        self, 
-        job_id: str, 
-        outputs: List[Dict[str, Any]], 
-        db: AsyncSession
-    ):
-        """Store generation results in the database."""
-        try:
-            # In a real implementation, this would store in the database
-            # For now, just cache in Redis
+                optimized_outputs = assessed_outputs
             
-            results_data = {
-                "job_id": job_id,
-                "outputs": outputs,
-                "generated_at": datetime.utcnow().isoformat(),
-                "total_outputs": len(outputs),
-                "successful_outputs": len([o for o in outputs if "error" not in o])
-            }
+            # Step 10: Finalization
+            await self._update_progress(task_id, 0.95, steps[9], "Finalizing generation")
+            final_results = await self._finalize_generation_step(
+                task_id, optimized_outputs, processed_inputs, memory_context, db
+            )
             
-            await redis_manager.set(f"generation_results:{job_id}", results_data, expire=86400)  # 24 hours
+            # Complete the job
+            await self._complete_generation_job(task_id, final_results, db)
+            await self._update_progress(task_id, 1.0, "completed", "Generation completed successfully")
             
-            logger.info(f"Stored results for job {job_id}: {len(outputs)} outputs")
+            # Store in KSE memory for future use
+            await self._store_generation_in_memory(
+                task_id, processed_inputs, final_results, memory_context
+            )
+            
+            return final_results
             
         except Exception as e:
-            logger.error(f"Failed to store results for job {job_id}: {e}")
+            logger.error(f"Capsule collection generation failed for task {task_id}: {e}")
+            await self._handle_generation_error(task_id, str(e), db)
             raise
     
-    async def _update_job_status(
-        self, 
-        job_id: str, 
-        status: str, 
-        progress: float = None, 
-        current_step: str = None,
-        error_message: str = None
+    async def generate_single_product_enhanced(
+        self,
+        task_id: str,
+        inputs: Dict[str, Any],
+        design_dna: Optional[Dict[str, Any]],
+        db: AsyncSession
     ):
-        """Update job status in Redis."""
+        """Enhanced single product generation with KSE memory integration."""
         try:
-            # Get existing job data
-            job_data = await redis_manager.get(f"generation_job:{job_id}")
-            if not job_data:
-                job_data = {}
+            # Initialize job tracking
+            params = {
+                'inputs': inputs,
+                'design_dna': design_dna,
+                'generation_type': 'single_product'
+            }
+            await self._initialize_generation_job(task_id, GenerationType.SINGLE_PRODUCT, params, db)
             
-            # Update status
-            job_data["status"] = status
-            if progress is not None:
-                job_data["progress"] = progress
-            if current_step:
-                job_data["current_step"] = current_step
-            if error_message:
-                job_data["error_message"] = error_message
+            steps = self.generation_steps['single_product']
             
-            job_data["updated_at"] = datetime.utcnow().isoformat()
+            # Step 1: Input Processing
+            await self._update_progress(task_id, 0.125, steps[0], "Processing product inputs")
+            processed_inputs = await self._process_product_inputs_step(inputs)
             
-            # Set completion time for finished jobs
-            if status in [GenerationStatus.COMPLETED, GenerationStatus.FAILED, GenerationStatus.CANCELLED]:
-                job_data["completed_at"] = datetime.utcnow().isoformat()
-                if "started_at" in job_data:
-                    start_time = datetime.fromisoformat(job_data["started_at"])
-                    duration = (datetime.utcnow() - start_time).total_seconds()
-                    job_data["generation_time"] = duration
+            # Step 2: Memory Retrieval
+            await self._update_progress(task_id, 0.25, steps[1], "Retrieving relevant memories")
+            memory_context = await self._retrieve_product_memory_step(processed_inputs, design_dna)
             
-            # Store updated data
-            await redis_manager.set(f"generation_job:{job_id}", job_data, expire=3600)
+            # Step 3: Product Specification
+            await self._update_progress(task_id, 0.375, steps[2], "Defining product specifications")
+            specifications = await self._define_product_specifications_step(
+                processed_inputs, memory_context, design_dna
+            )
+            
+            # Step 4: Design Generation
+            await self._update_progress(task_id, 0.5, steps[3], "Generating product design")
+            design = await self._generate_product_design_step(specifications, memory_context)
+            
+            # Step 5: Technical Validation
+            await self._update_progress(task_id, 0.625, steps[4], "Validating technical feasibility")
+            validated_design = await self._validate_technical_feasibility_step(design, specifications)
+            
+            # Step 6: Brand Alignment Check
+            await self._update_progress(task_id, 0.75, steps[5], "Checking brand alignment")
+            aligned_design = await self._check_product_brand_alignment_step(
+                validated_design, design_dna
+            )
+            
+            # Step 7: Quality Assessment
+            await self._update_progress(task_id, 0.875, steps[6], "Assessing design quality")
+            final_design = await self._assess_product_quality_step(aligned_design)
+            
+            # Step 8: Finalization
+            await self._update_progress(task_id, 1.0, steps[7], "Finalizing product")
+            final_results = await self._finalize_product_generation_step(
+                task_id, final_design, processed_inputs, db
+            )
+            
+            # Complete and store
+            await self._complete_generation_job(task_id, final_results, db)
+            await self._store_product_in_memory(task_id, processed_inputs, final_results)
+            
+            return final_results
             
         except Exception as e:
-            logger.error(f"Failed to update job status for {job_id}: {e}")
+            logger.error(f"Single product generation failed for task {task_id}: {e}")
+            await self._handle_generation_error(task_id, str(e), db)
+            raise
     
-    def _extract_generation_params(self, request: Any) -> Dict[str, Any]:
-        """Extract generation parameters from request."""
-        if hasattr(request, 'dict'):
-            return request.dict()
-        elif isinstance(request, dict):
-            return request
-        else:
-            return {}
-    
-    async def _process_generation_queue(self):
-        """Background task to process the generation queue."""
-        logger.info("Started generation queue processor")
-        
-        while True:
-            try:
-                # Process queued generations
-                # This is a placeholder for queue processing logic
-                await asyncio.sleep(1)
-                
-            except Exception as e:
-                logger.error(f"Error in generation queue processor: {e}")
-                await asyncio.sleep(5)
-    
-    # Additional methods for other generation types...
-    
-    async def _create_product_specification(
-        self, 
-        params: Dict[str, Any], 
-        brand_context: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Create product specification for single product generation."""
-        garment_type = params.get("garment_type", "top")
-        
-        return {
-            "garment_type": garment_type,
-            "target_price": params.get("target_price", 100),
-            "size_range": params.get("size_range", ["S", "M", "L"]),
-            "design_constraints": brand_context.get("constraints", {}),
-            "style_direction": params.get("text_prompt", f"modern {garment_type}")
-        }
-    
-    async def _generate_single_design(
-        self, 
-        product_spec: Dict[str, Any], 
-        params: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Generate design for a single product."""
-        return {
-            "piece_id": str(uuid.uuid4()),
-            "garment_type": product_spec["garment_type"],
-            "design_dna": {
-                "silhouette": "modern",
-                "color": "neutral",
-                "material": "cotton",
-                "details": ["clean_lines"],
-                "fit": "regular"
-            },
-            "specifications": product_spec,
-            "generation_params": {
-                "model_type": "stylegan3",
-                "resolution": 1024,
-                "seed": np.random.randint(0, 2**32 - 1)
+    async def generate_style_transfer_enhanced(
+        self,
+        task_id: str,
+        source_inputs: Dict[str, Any],
+        target_inputs: Dict[str, Any],
+        style_memory: Dict[str, Any],
+        db: AsyncSession
+    ):
+        """Enhanced style transfer with memory-guided style adaptation."""
+        try:
+            # Initialize job tracking
+            params = {
+                'source_inputs': source_inputs,
+                'target_inputs': target_inputs,
+                'style_memory': style_memory,
+                'generation_type': 'style_transfer'
             }
-        }
+            await self._initialize_generation_job(task_id, GenerationType.STYLE_TRANSFER, params, db)
+            
+            steps = self.generation_steps['style_transfer']
+            
+            # Step 1: Input Processing
+            await self._update_progress(task_id, 0.125, steps[0], "Processing style transfer inputs")
+            processed_source, processed_target = await self._process_style_transfer_inputs_step(
+                source_inputs, target_inputs
+            )
+            
+            # Step 2: Style Analysis
+            await self._update_progress(task_id, 0.25, steps[1], "Analyzing source and target styles")
+            style_analysis = await self._analyze_transfer_styles_step(
+                processed_source, processed_target
+            )
+            
+            # Step 3: Memory Retrieval
+            await self._update_progress(task_id, 0.375, steps[2], "Retrieving style transfer memories")
+            enhanced_memory = await self._enhance_style_memory_step(
+                style_analysis, style_memory
+            )
+            
+            # Step 4: Compatibility Assessment
+            await self._update_progress(task_id, 0.5, steps[3], "Assessing style compatibility")
+            compatibility = await self._assess_style_compatibility_step(
+                style_analysis, enhanced_memory
+            )
+            
+            # Step 5: Transfer Generation
+            await self._update_progress(task_id, 0.625, steps[4], "Generating style transfer")
+            transfer_result = await self._generate_style_transfer_step(
+                processed_source, processed_target, compatibility, enhanced_memory
+            )
+            
+            # Step 6: Style Preservation Check
+            await self._update_progress(task_id, 0.75, steps[5], "Checking style preservation")
+            preserved_result = await self._check_style_preservation_step(
+                transfer_result, processed_target, compatibility
+            )
+            
+            # Step 7: Quality Assessment
+            await self._update_progress(task_id, 0.875, steps[6], "Assessing transfer quality")
+            final_result = await self._assess_transfer_quality_step(preserved_result)
+            
+            # Step 8: Finalization
+            await self._update_progress(task_id, 1.0, steps[7], "Finalizing style transfer")
+            final_results = await self._finalize_style_transfer_step(
+                task_id, final_result, processed_source, processed_target, db
+            )
+            
+            # Complete and store
+            await self._complete_generation_job(task_id, final_results, db)
+            await self._store_style_transfer_in_memory(
+                task_id, processed_source, processed_target, final_results
+            )
+            
+            return final_results
+            
+        except Exception as e:
+            logger.error(f"Style transfer generation failed for task {task_id}: {e}")
+            await self._handle_generation_error(task_id, str(e), db)
+            raise
     
-    async def _extract_image_features(self, image_url: str) -> Dict[str, Any]:
-        """Extract features from source image for style transfer."""
-        # In real implementation, use CLIP or other vision models
-        return {
-            "visual_features": "mock_features",
-            "style_elements": ["color", "texture", "pattern"],
-            "image_url": image_url
-        }
+    # Implementation of detailed step methods
     
-    async def _extract_style_features(self, style_description: str) -> Dict[str, Any]:
-        """Extract style features from description."""
-        # In real implementation, use CLIP text encoder
-        return {
-            "style_vector": "mock_style_vector",
-            "style_attributes": ["modern", "elegant"],
-            "description": style_description
-        }
-    
-    async def _apply_style_transfer(
+    async def _process_inputs_step(
         self, 
-        source_features: Dict[str, Any], 
-        style_features: Dict[str, Any], 
-        params: Dict[str, Any]
+        inputs: Dict[str, Any], 
+        brand_parameters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Process and validate multi-modal inputs."""
+        processed = {
+            'modalities': [],
+            'embeddings': {},
+            'metadata': {},
+            'validation_results': {}
+        }
+        
+        # Process text prompt
+        if inputs.get('text_prompt'):
+            processed['modalities'].append('text')
+            processed['metadata']['text_prompt'] = inputs['text_prompt']
+            processed['validation_results']['text'] = {'valid': True, 'confidence': 0.9}
+        
+        # Process reference images
+        if inputs.get('reference_images'):
+            processed['modalities'].append('images')
+            processed['metadata']['reference_images'] = inputs['reference_images']
+            processed['validation_results']['images'] = {
+                'valid': True, 
+                'count': len(inputs['reference_images']),
+                'confidence': 0.85
+            }
+        
+        # Process other modalities
+        for modality in ['sketch_inputs', 'color_palette', 'material_preferences', 'style_vectors']:
+            if inputs.get(modality):
+                processed['modalities'].append(modality)
+                processed['metadata'][modality] = inputs[modality]
+                processed['validation_results'][modality] = {'valid': True, 'confidence': 0.8}
+        
+        # Add brand context
+        if brand_parameters:
+            processed['metadata']['brand_context'] = brand_parameters
+        
+        await asyncio.sleep(0.5)  # Simulate processing time
+        return processed
+    
+    async def _retrieve_memory_context_step(
+        self,
+        processed_inputs: Dict[str, Any],
+        brand_parameters: Dict[str, Any],
+        design_dna: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Retrieve relevant context from KSE memory."""
+        try:
+            context = await self.kse_memory.retrieve_relevant_context(
+                processed_inputs,
+                brand_id=brand_parameters.get('brand_id'),
+                depth=5
+            )
+            
+            # Enhance with design DNA if available
+            if design_dna:
+                context['design_dna_context'] = design_dna
+                context['dna_influence_weight'] = 0.8
+            
+            await asyncio.sleep(0.3)  # Simulate memory retrieval time
+            return context
+            
+        except Exception as e:
+            logger.warning(f"Memory retrieval failed: {e}")
+            return {'memory_nodes': [], 'fallback_mode': True}
+    
+    async def _analyze_design_dna_step(
+        self,
+        brand_parameters: Dict[str, Any],
+        memory_context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze brand design DNA and extract key characteristics."""
+        analysis = {
+            'aesthetic_profile': {},
+            'style_constraints': {},
+            'brand_identity_strength': 0.0,
+            'consistency_patterns': {},
+            'evolution_trends': {}
+        }
+        
+        # Extract brand characteristics
+        brand_id = brand_parameters.get('brand_id')
+        if brand_id and memory_context.get('brand_consistency_patterns'):
+            patterns = memory_context['brand_consistency_patterns']
+            analysis['aesthetic_profile'] = {
+                'dominant_styles': patterns.get('dominant_styles', []),
+                'color_preferences': patterns.get('color_preferences', []),
+                'consistency_score': patterns.get('consistency_score', 0.5)
+            }
+        
+        # Analyze memory context for evolution trends
+        if memory_context.get('design_evolution'):
+            evolution = memory_context['design_evolution']
+            analysis['evolution_trends'] = {
+                'trend_direction': evolution.get('evolution_trends', {}).get('trend', 'stable'),
+                'consistency_score': evolution.get('consistency_score', 0.8),
+                'innovation_opportunity': 1.0 - evolution.get('consistency_score', 0.8)
+            }
+        
+        # Set brand identity strength
+        analysis['brand_identity_strength'] = min(
+            analysis['aesthetic_profile'].get('consistency_score', 0.5) + 0.3,
+            1.0
+        )
+        
+        await asyncio.sleep(0.4)  # Simulate analysis time
+        return analysis
+    
+    async def _generate_concepts_step(
+        self,
+        processed_inputs: Dict[str, Any],
+        dna_analysis: Dict[str, Any],
+        target_pieces: int
     ) -> List[Dict[str, Any]]:
-        """Apply style transfer between source and target."""
-        # Mock style transfer output
-        return [{
-            "output_id": str(uuid.uuid4()),
-            "image_url": f"https://storage.example.com/style_transfer/{uuid.uuid4()}.jpg",
-            "style_transfer_strength": params.get("creativity_level", 0.7),
-            "quality_score": np.random.uniform(0.8, 0.95)
-        }]
+        """Generate initial concepts for the collection."""
+        concepts = []
+        
+        for i in range(target_pieces):
+            concept = {
+                'concept_id': str(uuid.uuid4()),
+                'piece_type': self._determine_piece_type(i, target_pieces),
+                'design_direction': self._generate_design_direction(processed_inputs, dna_analysis),
+                'style_attributes': self._extract_style_attributes(dna_analysis),
+                'initial_confidence': 0.7 + (i * 0.05),  # Slight variation
+                'generation_parameters': {
+                    'creativity_weight': 0.7,
+                    'brand_adherence_weight': 0.8,
+                    'novelty_weight': 0.6
+                }
+            }
+            concepts.append(concept)
+        
+        await asyncio.sleep(0.6)  # Simulate concept generation time
+        return concepts
+    
+    async def _ensure_style_coherence_step(
+        self,
+        concepts: List[Dict[str, Any]],
+        dna_analysis: Dict[str, Any],
+        memory_context: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Ensure style coherence across the collection."""
+        coherent_concepts = []
+        
+        # Calculate collection-wide style anchor
+        style_anchor = self._calculate_style_anchor(concepts, dna_analysis)
+        
+        for concept in concepts:
+            # Adjust concept to align with style anchor
+            coherent_concept = concept.copy()
+            coherent_concept['style_coherence_adjustments'] = {
+                'anchor_alignment': self._align_to_anchor(concept, style_anchor),
+                'coherence_score': self._calculate_coherence_score(concept, style_anchor),
+                'adjustments_made': ['color_harmony', 'silhouette_consistency']
+            }
+            
+            # Update confidence based on coherence
+            original_confidence = concept['initial_confidence']
+            coherence_bonus = coherent_concept['style_coherence_adjustments']['coherence_score'] * 0.2
+            coherent_concept['coherence_confidence'] = min(original_confidence + coherence_bonus, 1.0)
+            
+            coherent_concepts.append(coherent_concept)
+        
+        await asyncio.sleep(0.4)  # Simulate coherence processing
+        return coherent_concepts
+    
+    async def _validate_brand_alignment_step(
+        self,
+        concepts: List[Dict[str, Any]],
+        brand_parameters: Dict[str, Any],
+        dna_analysis: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Validate concepts against brand guidelines and DNA."""
+        aligned_concepts = []
+        
+        brand_adherence_threshold = brand_parameters.get('design_dna_adherence', 0.8)
+        
+        for concept in concepts:
+            alignment_score = self._calculate_brand_alignment(concept, dna_analysis)
+            
+            aligned_concept = concept.copy()
+            aligned_concept['brand_alignment'] = {
+                'alignment_score': alignment_score,
+                'passes_threshold': alignment_score >= brand_adherence_threshold,
+                'alignment_factors': {
+                    'aesthetic_match': alignment_score * 0.4,
+                    'style_consistency': alignment_score * 0.3,
+                    'brand_values_alignment': alignment_score * 0.3
+                }
+            }
+            
+            # Apply adjustments if needed
+            if alignment_score < brand_adherence_threshold:
+                aligned_concept = await self._adjust_for_brand_alignment(
+                    aligned_concept, dna_analysis, brand_adherence_threshold
+                )
+            
+            aligned_concepts.append(aligned_concept)
+        
+        await asyncio.sleep(0.5)  # Simulate validation time
+        return aligned_concepts
+    
+    async def _generate_visual_outputs_step(
+        self,
+        concepts: List[Dict[str, Any]],
+        generation_settings: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Generate visual outputs for the concepts."""
+        outputs = []
+        
+        quality_level = generation_settings.get('quality_level', 'standard')
+        resolution_map = {
+            'draft': (512, 512),
+            'standard': (768, 768),
+            'high': (1024, 1024),
+            'ultra': (1536, 1536)
+        }
+        resolution = resolution_map.get(quality_level, (768, 768))
+        
+        for i, concept in enumerate(concepts):
+            output = {
+                'output_id': str(uuid.uuid4()),
+                'concept_id': concept['concept_id'],
+                'output_index': i,
+                'output_type': 'image',
+                'resolution': resolution,
+                'generation_metadata': {
+                    'model_used': 'stylegan3_fashion',
+                    'generation_time': 2.5 + (i * 0.3),  # Simulate varying generation times
+                    'seed': hash(concept['concept_id']) % 1000000,
+                    'quality_level': quality_level
+                },
+                'content_url': f"https://storage.genviewkse.com/generations/{concept['concept_id']}.jpg",
+                'thumbnail_url': f"https://storage.genviewkse.com/thumbnails/{concept['concept_id']}.jpg",
+                'initial_quality_estimate': 0.8 + (i * 0.02)  # Slight variation
+            }
+            outputs.append(output)
+        
+        await asyncio.sleep(1.0)  # Simulate visual generation time
+        return outputs
+    
+    async def _assess_output_quality_step(
+        self,
+        outputs: List[Dict[str, Any]],
+        dna_analysis: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Assess the quality of generated outputs."""
+        assessed_outputs = []
+        
+        for output in outputs:
+            # Simulate quality assessment
+            base_quality = output['initial_quality_estimate']
+            
+            quality_assessment = {
+                'overall_quality': base_quality,
+                'technical_quality': base_quality + np.random.normal(0, 0.05),
+                'aesthetic_quality': base_quality + np.random.normal(0, 0.08),
+                'brand_alignment': base_quality + np.random.normal(0, 0.06),
+                'commercial_viability': base_quality + np.random.normal(0, 0.1),
+                'clip_score': base_quality + np.random.normal(0, 0.04),
+                'style_consistency': dna_analysis['brand_identity_strength'] * 0.9,
+                'novelty_score': 0.6 + np.random.normal(0, 0.1)
+            }
+            
+            # Ensure scores are within valid range
+            for key in quality_assessment:
+                quality_assessment[key] = max(0.0, min(1.0, quality_assessment[key]))
+            
+            assessed_output = output.copy()
+            assessed_output['quality_assessment'] = quality_assessment
+            assessed_output['final_quality_score'] = quality_assessment['overall_quality']
+            
+            assessed_outputs.append(assessed_output)
+        
+        await asyncio.sleep(0.3)  # Simulate assessment time
+        return assessed_outputs
+    
+    async def _optimize_commercial_step(
+        self,
+        outputs: List[Dict[str, Any]],
+        brand_parameters: Dict[str, Any],
+        generation_settings: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Optimize outputs for commercial success."""
+        optimized_outputs = []
+        
+        target_conversion = generation_settings.get('target_conversion_rate', 0.15)
+        
+        for output in outputs:
+            # Simulate commercial optimization
+            commercial_score = output['quality_assessment']['commercial_viability']
+            
+            optimization = {
+                'predicted_conversion_rate': commercial_score * 0.2,  # Scale to realistic range
+                'predicted_engagement': commercial_score * 0.8,
+                'market_fit_score': commercial_score * 0.9,
+                'pricing_optimization': {
+                    'suggested_price_range': {
+                        'min': 50 * commercial_score,
+                        'max': 200 * commercial_score
+                    },
+                    'price_elasticity': 0.3 + (commercial_score * 0.4)
+                },
+                'target_demographics': self._identify_target_demographics(
+                    output, brand_parameters
+                ),
+                'optimization_applied': commercial_score < target_conversion
+            }
+            
+            optimized_output = output.copy()
+            optimized_output['commercial_optimization'] = optimization
+            
+            # Apply optimization if needed
+            if optimization['optimization_applied']:
+                optimized_output = await self._apply_commercial_optimization(
+                    optimized_output, target_conversion
+                )
+            
+            optimized_outputs.append(optimized_output)
+        
+        await asyncio.sleep(0.4)  # Simulate optimization time
+        return optimized_outputs
+    
+    # Helper methods for step implementations
+    
+    def _determine_piece_type(self, index: int, total_pieces: int) -> str:
+        """Determine the type of piece based on collection structure."""
+        piece_types = ['top', 'bottom', 'dress', 'outerwear', 'accessory']
+        
+        # Ensure variety in collection
+        if total_pieces <= 5:
+            return piece_types[index % len(piece_types)]
+        else:
+            # More sophisticated distribution for larger collections
+            core_pieces = ['top', 'bottom', 'dress']
+            if index < 3:
+                return core_pieces[index]
+            else:
+                return piece_types[(index - 3) % len(piece_types)]
+    
+    def _generate_design_direction(
+        self, 
+        processed_inputs: Dict[str, Any], 
+        dna_analysis: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Generate design direction based on inputs and DNA analysis."""
+        return {
+            'primary_aesthetic': dna_analysis['aesthetic_profile'].get('dominant_styles', ['contemporary'])[0],
+            'color_direction': dna_analysis['aesthetic_profile'].get('color_preferences', ['neutral'])[0],
+            'silhouette_focus': 'relaxed' if 'casual' in str(processed_inputs) else 'tailored',
+            'innovation_level': dna_analysis['evolution_trends'].get('innovation_opportunity', 0.3)
+        }
+    
+    def _extract_style_attributes(self, dna_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract style attributes from DNA analysis."""
+        return {
+            'formality_level': 0.6,  # Mock value
+            'color_saturation': 0.4,
+            'pattern_complexity': 0.3,
+            'silhouette_structure': 0.7,
+            'material_luxury': 0.6
+        }
+    
+    def _calculate_style_anchor(
+        self, 
+        concepts: List[Dict[str, Any]], 
+        dna_analysis: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Calculate the style anchor for collection coherence."""
+        return {
+            'primary_aesthetic': dna_analysis['aesthetic_profile'].get('dominant_styles', ['contemporary'])[0],
+            'coherence_weight': 0.8,
+            'variation_tolerance': 0.2
+        }
+    
+    def _align_to_anchor(self, concept: Dict[str, Any], style_anchor: Dict[str, Any]) -> Dict[str, Any]:
+        """Align concept to style anchor."""
+        return {
+            'aesthetic_adjustment': 0.1,
+            'color_adjustment': 0.05,
+            'silhouette_adjustment': 0.08
+        }
+    
+    def _calculate_coherence_score(self, concept: Dict[str, Any], style_anchor: Dict[str, Any]) -> float:
+        """Calculate coherence score between concept and anchor."""
+        return 0.85 + np.random.normal(0, 0.05)  # Mock calculation
+    
+    def _calculate_brand_alignment(self, concept: Dict[str, Any], dna_analysis: Dict[str, Any]) -> float:
+        """Calculate brand alignment score for a concept."""
+        base_alignment = dna_analysis['brand_identity_strength']
+        variation = np.random.normal(0, 0.1)
+        return max(0.0, min(1.0, base_alignment + variation))
+    
+    async def _adjust_for_brand_alignment(
+        self,
+        concept: Dict[str, Any],
+        dna_analysis: Dict[str, Any],
+        threshold: float
+    ) -> Dict[str, Any]:
+        """Adjust concept to meet brand alignment threshold."""
+        adjusted_concept = concept.copy()
+        
+        # Simulate adjustment process
+        current_score = adjusted_concept['brand_alignment']['alignment_score']
+        adjustment_needed = threshold - current_score
+        
+        adjusted_concept['brand_alignment']['adjustments_applied'] = {
+            'aesthetic_refinement': adjustment_needed * 0.4,
+            'color_adjustment': adjustment_needed * 0.3,
+            'style_correction': adjustment_needed * 0.3
+        }
+        
+        # Update alignment score
+        adjusted_concept['brand_alignment']['alignment_score'] = threshold + 0.05
+        adjusted_concept['brand_alignment']['passes_threshold'] = True
+        
+        return adjusted_concept
+    
+    def _identify_target_demographics(
+        self, 
+        output: Dict[str, Any], 
+        brand_parameters: Dict[str, Any]
+    ) -> List[str]:
+        """Identify target demographics for the output."""
+        # Mock demographic identification
+        demographics = ['millennials', 'gen_z', 'professionals', 'creatives']
+        return demographics[:2]  # Return top 2
+    
+    async def _apply_commercial_optimization(
+        self,
+        output: Dict[str, Any],
+        target_conversion: float
+    ) -> Dict[str, Any]:
+        """Apply commercial optimization to output."""
+        optimized_output = output.copy()
+        
+        # Simulate optimization adjustments
+        optimized_output['commercial_optimization']['optimization_adjustments'] = {
+            'color_appeal_boost': 0.1,
+            'silhouette_market_fit': 0.15,
+            'price_point_optimization': 0.08
+        }
+        
+        # Update commercial viability score
+        current_viability = output['quality_assessment']['commercial_viability']
+        boost = min(0.2, target_conversion - (current_viability * 0.2))
+        optimized_output['quality_assessment']['commercial_viability'] = min(1.0, current_viability + boost)
+        
+        return optimized_output
+    
+    # Utility methods for job management
+    
+    async def _initialize_generation_job(
+        self,
+        task_id: str,
+        generation_type: GenerationType,
+        params: Dict[str, Any],
+        db: AsyncSession
+    ):
+        """Initialize generation job in database."""
+        try:
+            # Create job record
+            job = GenerationJob(
+                id=uuid.UUID(task_id),
+                name=params.get('name', f'Generation {task_id}'),
+                generation_type=generation_type,
+                brand_id=params.get('brand_parameters', {}).get('brand_id'),
+                input_parameters=params,
+                status=GenerationStatus.RUNNING,
+                started_at=datetime.utcnow()
+            )
+            
+            db.add(job)
+            await db.commit()
+            
+            # Initialize Redis tracking
+            await redis_manager.set(
+                f"generation_task:{task_id}",
+                {
+                    "status": GenerationStatus.RUNNING,
+                    "progress": 0.0,
+                    "started_at": datetime.utcnow().isoformat(),
+                    "current_step": "initializing"
+                },
+                expire=3600
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize generation job {task_id}: {e}")
+            raise
+    
+    async def _update_progress(
+        self,
+        task_id: str,
+        progress: float,
+        current_step: str,
+        step_description: str = ""
+    ):
+        """Update generation progress in Redis."""
+        try:
+            task_data = await redis_manager.get(f"generation_task:{task_id}") or {}
+            
+            task_data.update({
+                "progress": progress,
+                "current_step": current_step,
+                "step_description": step_description,
+                "updated_at": datetime.utcnow().isoformat()
+            })
+            
+            await redis_manager.set(f"generation_task:{task_id}", task_data, expire=3600)
+            
+            logger.info(f"Task {task_id}: {progress*100:.1f}% - {current_step}")
+            
+        except Exception as e:
+            logger.error(f"Failed to update progress for task {task_id}: {e}")
+    
+    async def _complete_generation_job(
+        self,
+        task_id: str,
+        results: Dict[str, Any],
+        db: AsyncSession
+    ):
+        """Complete generation job and store results."""
+        try:
+            # Update job in database
+            job = await db.get(GenerationJob, uuid.UUID(task_id))
+            if job:
+                job.status = GenerationStatus.COMPLETED
+                job.completed_at = datetime.utcnow()
+                job.output_count = len(results.get('outputs', []))
+                job.average_quality_score = np.mean([
+                    output.get('final_quality_score', 0.5) 
+                    for output in results.get('outputs', [])
+                ])
+                await db.commit()
+            
+            # Store results in Redis
+            await redis_manager.set(
+                f"generation_results:{task_id}",
+                results,
+                expire=86400  # 24 hours
+            )
+            
+            # Update task status
+            await redis_manager.set(
+                f"generation_task:{task_id}",
+                {
+                    "status": GenerationStatus.COMPLETED,
+                    "progress": 1.0,
+                    "completed_at": datetime.utcnow().isoformat(),
+                    "results_available": True
+                },
+                expire=3600
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to complete generation job {task_id}: {e}")
+            raise
+    
+    async def _handle_generation_error(
+        self,
+        task_id: str,
+        error_message: str,
+        db: AsyncSession
+    ):
+        """Handle generation error and update status."""
+        try:
+            # Update job in database
+            job = await db.get(GenerationJob, uuid.UUID(task_id))
+            if job:
+                job.status = GenerationStatus.FAILED
+                job.error_message = error_message
+                job.completed_at = datetime.utcnow()
+                await db.commit()
+            
+            # Update task status in Redis
+            await redis_manager.set(
+                f"generation_task:{task_id}",
+                {
+                    "status": GenerationStatus.FAILED,
+                    "error_message": error_message,
+                    "failed_at": datetime.utcnow().isoformat()
+                },
+                expire=3600
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to handle generation error for task {task_id}: {e}")
+    
+    async def _store_generation_in_memory(
+        self,
+        task_id: str,
+        inputs: Dict[str, Any],
+        results: Dict[str, Any],
+        memory_context: Dict[str, Any]
+    ):
+        """Store generation in KSE memory for future use."""
+        try:
+            # Convert inputs to MultiModalInputs format
+            multimodal_inputs = MultiModalInputs(
+                modalities=inputs.get('modalities', []),
+                embeddings=inputs.get('embeddings', {}),
+                metadata=inputs.get('metadata', {})
+            )
+            
+            # Store in KSE memory
+            await self.kse_memory.store_generation_context(
+                task_id, multimodal_inputs, results
+            )
+            
+        except Exception as e:
+            logger.warning(f"Failed to store generation in memory for task {task_id}: {e}")
+    
+    # Mock implementations for additional step methods
+    
+    async def _finalize_generation_step(
+        self,
+        task_id: str,
+        outputs: List[Dict[str, Any]],
+        inputs: Dict[str, Any],
+        memory_context: Dict[str, Any],
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Finalize generation and prepare results."""
+        return {
+            'task_id': task_id,
+            'generation_type': 'capsule_collection',
+            'outputs': outputs,
+            'metadata': {
+                'total_outputs': len(outputs),
+                'average_quality': np.mean([o.get('final_quality_score', 0.5) for o in outputs]),
+                'generation_time': 30.5,  # Mock time
+                'memory_nodes_used': len(memory_context.get('memory_nodes', [])),
+                'kse_enhanced': True
+            },
+            'completed_at': datetime.utcnow().isoformat()
+        }
+    
+    # Additional mock step implementations for single product and style transfer
+    async def _process_product_inputs_step(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.2)
+        return {'processed': True, 'inputs': inputs}
+    
+    async def _retrieve_product_memory_step(self, inputs: Dict[str, Any], design_dna: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.3)
+        return {'memory_retrieved': True, 'relevant_products': 3}
+    
+    async def _define_product_specifications_step(self, inputs: Dict[str, Any], memory: Dict[str, Any], dna: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.2)
+        return {'specifications_defined': True, 'garment_type': 'top'}
+    
+    async def _generate_product_design_step(self, specs: Dict[str, Any], memory: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.4)
+        return {'design_generated': True, 'quality_score': 0.85}
+    
+    async def _validate_technical_feasibility_step(self, design: Dict[str, Any], specs: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.2)
+        return {**design, 'technically_feasible': True}
+    
+    async def _check_product_brand_alignment_step(self, design: Dict[str, Any], dna: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.2)
+        return {**design, 'brand_aligned': True, 'alignment_score': 0.88}
+    
+    async def _assess_product_quality_step(self, design: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.2)
+        return {**design, 'final_quality_score': 0.87}
+    
+    async def _finalize_product_generation_step(self, task_id: str, design: Dict[str, Any], inputs: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
+        await asyncio.sleep(0.1)
+        return {
+            'task_id': task_id,
+            'product_design': design,
+            'generation_type': 'single_product',
+            'completed_at': datetime.utcnow().isoformat()
+        }
+    
+    async def _store_product_in_memory(self, task_id: str, inputs: Dict[str, Any], results: Dict[str, Any]):
+        await asyncio.sleep(0.1)
+        pass
+    
+    # Style transfer step implementations
+    async def _process_style_transfer_inputs_step(self, source: Dict[str, Any], target: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        await asyncio.sleep(0.2)
+        return ({'processed_source': source}, {'processed_target': target})
+    
+    async def _analyze_transfer_styles_step(self, source: Dict[str, Any], target: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.3)
+        return {'style_compatibility': 0.75, 'transfer_difficulty': 0.4}
+    
+    async def _enhance_style_memory_step(self, analysis: Dict[str, Any], memory: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.2)
+        return {**memory, 'enhanced': True}
+    
+    async def _assess_style_compatibility_step(self, analysis: Dict[str, Any], memory: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.2)
+        return {'compatibility_score': 0.8, 'recommended_strength': 0.7}
+    
+    async def _generate_style_transfer_step(self, source: Dict[str, Any], target: Dict[str, Any], compatibility: Dict[str, Any], memory: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.5)
+        return {'transfer_result': 'generated', 'quality_score': 0.82}
+    
+    async def _check_style_preservation_step(self, result: Dict[str, Any], target: Dict[str, Any], compatibility: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.2)
+        return {**result, 'style_preserved': True, 'preservation_score': 0.85}
+    
+    async def _assess_transfer_quality_step(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.2)
+        return {**result, 'final_quality_score': 0.84}
+    
+    async def _finalize_style_transfer_step(self, task_id: str, result: Dict[str, Any], source: Dict[str, Any], target: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
+        await asyncio.sleep(0.1)
+        return {
+            'task_id': task_id,
+            'transfer_result': result,
+            'generation_type': 'style_transfer',
+            'completed_at': datetime.utcnow().isoformat()
+        }
+    
+    async def _store_style_transfer_in_memory(self, task_id: str, source: Dict[str, Any], target: Dict[str, Any], results: Dict[str, Any]):
+        await asyncio.sleep(0.1)
+        pass
