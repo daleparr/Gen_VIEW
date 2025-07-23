@@ -166,6 +166,9 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - NERF_DEVICE=cpu  # Use CPU for development, GPU for production
       - RENDERING_QUEUE=rendering_tasks
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - LOG_LEVEL=INFO
     volumes:
       - ./services/rendering-service/src:/app/src
       - ./models:/app/models
@@ -181,6 +184,36 @@ services:
     #   resources:
     #     reservations:
     #       devices:
+
+  # Curation Engine Service
+  curation-engine:
+    build:
+      context: ./services/curation-engine
+      dockerfile: Dockerfile
+    ports:
+      - "8004:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/2
+      - GENERATION_API_URL=http://generation-api:8000
+      - MEMORY_SERVICE_URL=http://memory-service:8001
+      - RENDERING_SERVICE_URL=http://rendering-service:8000
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./services/curation-engine/src:/app/src
+      - curation_logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - gen-view-network
+    restart: unless-stopped
     #         - driver: nvidia
     #           count: 1
     #           capabilities: [gpu]
@@ -339,6 +372,8 @@ volumes:
   neo4j_data:
     driver: local
   neo4j_logs:
+    driver: local
+  curation_logs:
     driver: local
   prometheus_data:
     driver: local
