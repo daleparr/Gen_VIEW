@@ -1,0 +1,167 @@
+groups:
+  - name: service_health
+    rules:
+      # Service availability alerts
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "Service {{ $labels.job }} on {{ $labels.instance }} has been down for more than 1 minute."
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate on {{ $labels.job }}"
+          description: "Error rate is {{ $value | humanizePercentage }} on {{ $labels.job }}."
+
+  - name: performance_alerts
+    rules:
+      # Response time alerts
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High response time on {{ $labels.job }}"
+          description: "95th percentile response time is {{ $value }}s on {{ $labels.job }}."
+
+      # Memory usage alerts
+      - alert: HighMemoryUsage
+        expr: (process_resident_memory_bytes / 1024 / 1024) > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.job }}"
+          description: "Memory usage is {{ $value }}MB on {{ $labels.job }}."
+
+      # CPU usage alerts
+      - alert: HighCPUUsage
+        expr: rate(process_cpu_seconds_total[5m]) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.job }}"
+          description: "CPU usage is {{ $value }}% on {{ $labels.job }}."
+
+  - name: ai_model_alerts
+    rules:
+      # AI model performance
+      - alert: SlowAIInference
+        expr: histogram_quantile(0.95, rate(ai_inference_duration_seconds_bucket[5m])) > 30
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow AI inference on {{ $labels.job }}"
+          description: "95th percentile AI inference time is {{ $value }}s on {{ $labels.job }}."
+
+      - alert: HighAIModelErrors
+        expr: rate(ai_model_errors_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High AI model error rate on {{ $labels.job }}"
+          description: "AI model error rate is {{ $value }} errors/sec on {{ $labels.job }}."
+
+  - name: database_alerts
+    rules:
+      # PostgreSQL alerts
+      - alert: PostgreSQLDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL database is not responding."
+
+      - alert: HighDatabaseConnections
+        expr: pg_stat_activity_count > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High database connections"
+          description: "PostgreSQL has {{ $value }} active connections."
+
+      # Redis alerts
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is down"
+          description: "Redis instance is not responding."
+
+      - alert: HighRedisMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Redis memory usage"
+          description: "Redis memory usage is {{ $value | humanizePercentage }}."
+
+  - name: queue_alerts
+    rules:
+      # Job queue alerts
+      - alert: HighQueueLength
+        expr: redis_list_length{key=~".*queue.*"} > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High queue length"
+          description: "Queue {{ $labels.key }} has {{ $value }} pending jobs."
+
+      - alert: QueueProcessingStalled
+        expr: increase(queue_jobs_processed_total[10m]) == 0 and redis_list_length{key=~".*queue.*"} > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Queue processing stalled"
+          description: "No jobs processed in 10 minutes but queue has pending jobs."
+
+  - name: business_metrics
+    rules:
+      # Generation metrics
+      - alert: LowGenerationSuccess
+        expr: rate(generation_requests_total{status="success"}[10m]) / rate(generation_requests_total[10m]) < 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low generation success rate"
+          description: "Generation success rate is {{ $value | humanizePercentage }}."
+
+      # Quality assessment metrics
+      - alert: LowQualityScores
+        expr: avg_over_time(quality_assessment_score[30m]) < 0.6
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low average quality scores"
+          description: "Average quality score is {{ $value }} over the last 30 minutes."
+
+      # Recommendation metrics
+      - alert: LowRecommendationEngagement
+        expr: rate(recommendation_clicks_total[1h]) / rate(recommendation_requests_total[1h]) < 0.05
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low recommendation engagement"
+          description: "Recommendation click-through rate is {{ $value | humanizePercentage }}."
