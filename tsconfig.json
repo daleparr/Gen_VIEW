@@ -1,0 +1,43 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "baseUrl": ".",
+    "paths": {
+      "@gen-view-kse/kse-substrate": ["packages/kse-substrate/src"],
+      "@gen-view-kse/fashion-models": ["packages/fashion-models/src"],
+      "@gen-view-kse/neural-rendering": ["packages/neural-rendering/src"],
+      "@gen-view-kse/memory-sdk": ["packages/memory-sdk/src"],
+      "@gen-view-kse/ui-components": ["packages/ui-components/src"]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*",
+    "services/*/src/**/*",
+    "demos/*/src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
+}

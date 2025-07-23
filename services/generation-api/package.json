@@ -1,0 +1,48 @@
+{
+  "name": "@gen-view-kse/generation-api",
+  "version": "1.0.0",
+  "description": "FastAPI generation service for AI model serving",
+  "main": "src/main.py",
+  "scripts": {
+    "dev": "uvicorn src.main:app --reload --host 0.0.0.0 --port 8000",
+    "start": "uvicorn src.main:app --host 0.0.0.0 --port 8000",
+    "test": "pytest tests/ -v",
+    "lint": "flake8 src/ tests/",
+    "format": "black src/ tests/",
+    "type-check": "mypy src/"
+  },
+  "dependencies": {
+    "fastapi": "^0.104.1",
+    "uvicorn": "^0.24.0",
+    "pydantic": "^2.5.0",
+    "sqlalchemy": "^2.0.23",
+    "alembic": "^1.13.0",
+    "asyncpg": "^0.29.0",
+    "redis": "^5.0.1",
+    "celery": "^5.3.4",
+    "torch": "^2.1.0",
+    "torchvision": "^0.16.0",
+    "transformers": "^4.35.0",
+    "diffusers": "^0.24.0",
+    "clip-by-openai": "^1.0",
+    "chromadb": "^0.4.18",
+    "pillow": "^10.1.0",
+    "numpy": "^1.25.2",
+    "opencv-python": "^4.8.1.78"
+  },
+  "devDependencies": {
+    "pytest": "^7.4.3",
+    "pytest-asyncio": "^0.21.1",
+    "httpx": "^0.25.2",
+    "black": "^23.11.0",
+    "flake8": "^6.1.0",
+    "mypy": "^1.7.1"
+  },
+  "keywords": [
+    "fastapi",
+    "ai",
+    "generation",
+    "fashion",
+    "machine-learning"
+  ]
+}

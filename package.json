@@ -1,0 +1,51 @@
+{
+  "name": "gen-view-kse",
+  "version": "1.0.0",
+  "description": "GEN-VIEW-KSE: Universal AI substrate with fashion demo targeting key industry players",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "services/*",
+    "demos/*"
+  ],
+  "scripts": {
+    "build": "lerna run build",
+    "test": "lerna run test",
+    "lint": "lerna run lint",
+    "dev": "lerna run dev --parallel",
+    "clean": "lerna clean",
+    "bootstrap": "lerna bootstrap",
+    "version": "lerna version",
+    "publish": "lerna publish"
+  },
+  "devDependencies": {
+    "@lerna/cli": "^7.4.2",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.45.0",
+    "eslint-config-prettier": "^8.8.0",
+    "eslint-plugin-prettier": "^5.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.1.6",
+    "husky": "^8.0.3",
+    "lint-staged": "^13.2.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/gen-view-kse.git"
+  },
+  "keywords": [
+    "ai",
+    "fashion",
+    "neural-rendering",
+    "kse-substrate",
+    "machine-learning",
+    "computer-vision"
+  ],
+  "author": "GEN-VIEW-KSE Team",
+  "license": "MIT"
+}
